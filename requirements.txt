@@ -2,3 +2,7 @@ requests
 paddlepaddle
 paddleocr
 opencv-contrib-python
+huggingface_hub
+transformers
+ipywidgets
+timm
