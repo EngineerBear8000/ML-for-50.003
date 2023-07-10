@@ -8,7 +8,7 @@ COPY requirements.txt ./
 
 USER root
 RUN apt-get update \
-  && apt-get install -y nano git ffmpeg libsm6 libxext6 
+  && apt-get install -y nano git ffmpeg libsm6 libxext6
 
 USER jovyan
 RUN pip3 install wheel setuptools \
