@@ -8,13 +8,14 @@ COPY requirements.txt ./
 
 USER root
 RUN apt-get update \
-  && apt-get install -y nano git ffmpeg libsm6 libxext6
+  && apt-get install -y nano git ffmpeg libsm6 libxext6 poppler-utils
 
 USER jovyan
 RUN pip3 install wheel setuptools \
   && pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu 
 
 RUN pip3 install -r requirements.txt
+RUN pip3 install --force-reinstall -v "protobuf==3.20.3"
  
 #CMD instruction should be used to run the software
 #contained by your image, along with any arguments.
