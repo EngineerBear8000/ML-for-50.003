@@ -70,14 +70,7 @@ def run_ocr(image,type_of_document='invoice'):
             header_data.append(None)
     extracted_data = {"header":header_data,"row_data":row_data}
     # return json.dumps(formater(extracted_data))
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    QAmodel = psg.from_pretrained("google/pix2struct-docvqa-base").to(DEVICE) 
-    processor = psp.from_pretrained("google/pix2struct-docvqa-base")
-    generator = partial(generate, QAmodel, processor,DEVICE)
-    unstructured_data = DocQa(image,generator,type_of_document)
-    formated_data = formater(extracted_data)
-    merged_data = {**formated_data, **unstructured_data}
-    return json.dumps(merged_data)
+    return formater(extracted_data)
 
 def run_ocr_template(image,template_data_loc,template_size):
     #Get position of table
@@ -333,7 +326,7 @@ def similar(word_1,word_2):
     return SequenceMatcher(None, word_1.casefold(), word_2.casefold()).ratio()>0.6
 
 #generator for pix2struct
-def generate(model, processor, DEVICE, img, questions):
+def generate(model, processor, img, questions):
   inputs = processor(images=[img for _ in range(len(questions))], 
            text=questions, return_tensors="pt").to(DEVICE)
   predictions = model.generate(**inputs, max_new_tokens=512)
@@ -382,6 +375,19 @@ ocr_model = PaddleOCR(lang='en',use_angle_cls=True,show_log=False)
 img_path = "../data/Invoice/CamScanner 06-20-2023 11.20_74.jpg"
 # img_path = '../data/Invoice/R-4-52.jpg'
 image = Image.open(img_path).convert("RGB")
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+QAmodel = psg.from_pretrained("google/pix2struct-docvqa-base").to(DEVICE) 
+processor = psp.from_pretrained("google/pix2struct-docvqa-base")
+
+generator = partial(generate, QAmodel, processor)
+
+type_of_document = "invoice"
+
 #calling functions to do docqa and ocr then merging dicts and load into json
-data = run_ocr(image,type_of_document = "invoice")
-print(data)
+unstructured_data = DocQa(image,generator,type_of_document)
+data  = run_ocr(image,type_of_document)
+merged_data = {**data, **unstructured_data}
+js_data = json.dumps(merged_data)
+print(js_data)
+

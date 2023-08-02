@@ -1,25 +1,28 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[1]:
+
+
 from PIL import Image, ImageOps
 import numpy as np
+import time
 from copy import deepcopy
 from difflib import SequenceMatcher
 from paddleocr import PaddleOCR
-import json
+import json 
+ocr_model = PaddleOCR(lang='en',use_angle_cls=True,show_log=False)
 
-import torch
-from functools import partial
-from transformers import Pix2StructForConditionalGeneration as psg
-from transformers import Pix2StructProcessor as psp
 
-def run_ocr(image,type_of_document='invoice'):
-    #Transpose the image accordingly to EXIF Orientation tag
+# In[26]:
+
+
+def run_ocr_merger(image,type_of_document='invoice'):
     image = ImageOps.exif_transpose(image)
-    #Image conversion to be used for paddleOCR
     img = np.asarray(image)
-    #Implementing OCR for the entire image
     raw = ocr_model.ocr(img, cls=True)
     raw = order_by_tbyx(raw)[0]
     
-    #Start and end identifiers determine the start and end rows of a table
     if type_of_document == 'invoice':
         start_identifiers = ['Description','Particular','Item']
         end_identifiers = ['Total']
@@ -27,10 +30,8 @@ def run_ocr(image,type_of_document='invoice'):
         start_identifiers = ['Document','Particulars']
         end_identifiers = ['Total']
     
-    #Find startpoint accordingly to identifier
     startpoint = query_word_single(raw,start_identifiers,instance_from_front=True)
     if startpoint:
-        #Since the start identifier selected may not be the first of the row, determine the actual startpoint
         for i in raw[raw.index(startpoint)::-1]:
             startpoint_xmin = min([i[0] for i in startpoint[0]])
             i_xmax = max([j[0] for j in i[0]])
@@ -40,69 +41,12 @@ def run_ocr(image,type_of_document='invoice'):
     else:
         print("ERROR: No initialier word can be found.")
         return
-    
-    #Find endpoint accordingly to identifier
     endpoint = query_word_single(raw[raw.index(startpoint)+5::],end_identifiers,instance_from_front=True)
     if not endpoint:
         endpoint = raw[-1]
-    
-    #Obtain 1D table data without structure, organize it into a 2D array so that has structure
     table_data = raw[raw.index(startpoint):raw.index(endpoint):]
     org_table_data = organise_table(table_data)
-    #Some data may be seperated into 2 rows but are supposed to be the same datapoint, find and merge them
     merged_table = table_merger(org_table_data)
-    
-    #Organise data to be formatted and sent to backend
-    row_data = []
-    for i in merged_table[1::]:
-        temp = []
-        for j in i:
-            if j!='-':
-                temp.append(j[1][0])
-            else:
-                temp.append(None)
-        row_data.append(temp)
-    header_data = []
-    for i in merged_table[0]:
-        if i!='-':
-            header_data.append(i[1][0])
-        else:
-            header_data.append(None)
-    extracted_data = {"header":header_data,"row_data":row_data}
-    # return json.dumps(formater(extracted_data))
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    QAmodel = psg.from_pretrained("google/pix2struct-docvqa-base").to(DEVICE) 
-    processor = psp.from_pretrained("google/pix2struct-docvqa-base")
-    generator = partial(generate, QAmodel, processor,DEVICE)
-    unstructured_data = DocQa(image,generator,type_of_document)
-    formated_data = formater(extracted_data)
-    merged_data = {**formated_data, **unstructured_data}
-    return json.dumps(merged_data)
-
-def run_ocr_template(image,template_data_loc,template_size):
-    #Get position of table
-    table_box = (template_data_loc["table_data"][0][0],template_data_loc["table_data"][0][1],
-             template_data_loc["table_data"][1][0],template_data_loc["table_data"][2][1])
-    
-    #Transpose the image accordingly to EXIF Orientation tag
-    image = ImageOps.exif_transpose(image)
-    #Image conversion to be used for paddleOCR
-    img = np.asarray(image)
-    #Implementing OCR for the entire image
-    raw = ocr_model.ocr(img, cls=True)
-    raw = order_by_tbyx(raw)[0]
-    
-    #Perform image resizing
-    image = image.resize(template_size)
-    
-    #Extract data requested from template 
-    img = np.asarray(image)
-    data = ocr_model.ocr(img)[0]
-    table_data,extracted_data = extract_requested_data(template_data_loc,data,table_box)
-    
-    #Extract Table Data
-    table_output = organise_table(table_data)
-    merged_table = table_merger(table_output)
     
     row_data = []
     for i in merged_table[1::]:
@@ -122,7 +66,10 @@ def run_ocr_template(image,template_data_loc,template_size):
     extracted_data = {"header":header_data,"row_data":row_data}
     return json.dumps(formater(extracted_data))
 
-#Sorting of data in a normal reading order 
+
+# In[14]:
+
+
 def order_by_tbyx(ocr_info):
     output = sorted(ocr_info,key=lambda r:(r[0][1],r[0][0]))
     for i in range(len(output)-1):
@@ -135,7 +82,10 @@ def order_by_tbyx(ocr_info):
                 break
     return output
 
-#Search for a word in the data that is same r very similar
+
+# In[15]:
+
+
 def query_word_single(data,words,instance_from_front):
     data_copy = deepcopy(data)
     if not instance_from_front:
@@ -145,41 +95,13 @@ def query_word_single(data,words,instance_from_front):
             if word.casefold() in i[1][0].casefold() or SequenceMatcher(None, word.casefold(), i[1][0].casefold()).ratio()>0.7:
                 return i
 
-#Using the template provided, search and extract the data requested
-def extract_requested_data(template_data,data,table_box):
-    table_box_xmax = table_box[2]
-    table_box_xmin = table_box[0]
-    table_box_ymax = table_box[3]
-    table_box_ymin = table_box[1]
-    
-    table_data = []
-    output = {}
 
-    for k,v in template_data.items():
-        template_xmax = max([n[0] for n in v])
-        template_xmin = min([n[0] for n in v])
-        template_ymax = max([n[1] for n in v])
-        template_ymin = min([n[1] for n in v])
-            
-        for i in data:
-            data_xmax = max([j[0] for j in i[0]])
-            data_xmin = min([j[0] for j in i[0]])
-            data_ymax = max([j[1] for j in i[0]])
-            data_ymin = min([j[1] for j in i[0]])
-            
-            if k=='table_data' and not (data_xmax>table_box_xmax and data_xmin>table_box_xmax) and not (data_xmax<table_box_xmin and data_xmin<table_box_xmin) and not (data_ymax>table_box_ymax and data_ymin>table_box_ymax) and not (data_ymax<table_box_ymin and data_ymin<table_box_ymin):
-                table_data.append(i)
-            elif not (data_xmax>template_xmax and data_xmin>template_xmax) and not (data_xmax<template_xmin and data_xmin<template_xmin) and not (data_ymax>template_ymax and data_ymin>template_ymax) and not (data_ymax<template_ymin and data_ymin<template_ymin):
-                if k in output.keys():
-                    output[k] = output[k] + " " + i[1][0]
-                else:
-                    output[k] = i[1][0]
-    return table_data, output
+# In[16]:
+
 
 def organise_table(table_data):
     data_copy = deepcopy(table_data)
     
-    #Cut data into seperate piece whenever the data is on a new row
     first_xmin = min([i[0] for i in table_data[0][0]])
     org_data = []
     temp = []
@@ -191,19 +113,13 @@ def organise_table(table_data):
             temp = []
         first_xmin = i_xmin
         temp.append(i)
-    org_data.append(temp)
     
-    #Create an output array that can fit all the data inside including the empty cells
     max_rows = len(org_data)
     all_column_len = max([(n,len(i)) for n,i in enumerate(org_data)], key = lambda x: x[1])
     row_of_max_column = all_column_len[0]
     max_columns = all_column_len[1]
     output = [['-']*max_columns for _ in range(max_rows)]
-    
-    #Using the row with the highest number of entries and the first element of each row as reference x and y values,
-    #we check every cell generated from these x and y values if a data point resides within.
-    #If it is within, add to the output cell. If the output cell already contains another datapoint, compare the y values
-    #to determine which should be on top, merge the 2 cells and replace the original cell
+            
     for col,i in enumerate(org_data[row_of_max_column]):
         i_xmax = max([k[0] for k in i[0]])
         i_xmin = min([k[0] for k in i[0]])
@@ -211,15 +127,16 @@ def organise_table(table_data):
             j_ymax = max([k[1] for k in j[0]])
             j_ymin = min([k[1] for k in j[0]])
                 
-            for k in data_copy:
+            for k in data_copy[::-1]:
                 k_xmax = max([n[0] for n in k[0]])
                 k_xmin = min([n[0] for n in k[0]])
                 k_ymax = max([n[1] for n in k[0]])
                 k_ymin = min([n[1] for n in k[0]])
-                
+
                 if not (k_xmax>i_xmax and k_xmin>i_xmax) and not (k_xmax<i_xmin and k_xmin<i_xmin) and not (k_ymax>j_ymax and k_ymin>j_ymax) and not (k_ymax<j_ymin and k_ymin<j_ymin):
                     if output[row][col] == '-':
                         output[row][col] = k
+                        data_copy.remove(k)
                     else:
                         ymax = max([n[1] for n in output[row][col][0]])
                         if ymax<k_ymax:
@@ -227,16 +144,20 @@ def organise_table(table_data):
                         else:
                             new_entry = merge_words(k,output[row][col])
                         output[row][col] = new_entry
-                    data_copy.remove(k)
-                    break
-                    
-    #Clear any unused rows       
+                        data_copy.remove(k)
+    
     for i in output[::-1]:
         if all([j == '-' for j in i]):
             output.remove(i)
+    
+#     if len(org_data[0]) < sum([1 if i!='-' else 0 for i in output[0]]):
+#         output[0] = org_data[0]
     return output
 
-#Merge datapoints
+
+# In[17]:
+
+
 def merge_words(first,second):
     first_xmax = max([i[0] for i in first[0]])
     first_xmin = min([i[0] for i in first[0]])
@@ -253,22 +174,23 @@ def merge_words(first,second):
     
     return [pos_arr,item_tuple]
 
+
+# In[18]:
+
+
 def table_merger(table_data):
     data_copy = deepcopy(table_data)
     
     while(1):
-        #Clear any unused rows 
         for i in data_copy[::-1]:
             if all([j == '-' for j in i]):
                 data_copy.remove(i)
-        #Merging is determined to have been completed when there are no rows left with just one element
         row_sum = []
         for i in data_copy:
             row_sum.append(sum([1 if j!='-' else 0 for j in i]))
         if all([i>1 for i in row_sum]):
             break
-        
-        #For all datapoints find 2 datapoint that are closest to each other and merge them
+            
         min_dist = 1000000
         min_elem = []
         for i in data_copy[row_sum.index(min(row_sum))]:
@@ -299,6 +221,73 @@ def table_merger(table_data):
 #         print("running loop")        
     return data_copy
 
+
+# In[19]:
+
+
+def organise_data(data):
+    vertical_output = {}
+    horizontal_output = {}
+    key_data = []
+    for i in data:
+        if any([j in i[1][0] for j in '1234567890']):
+            vertical_output[i[1][0]] = ''
+            horizontal_output[i[1][0]] = ''
+            key_data.append(i)
+    
+    for i in key_data:
+        possible_vertical = []
+        i_xmin = min([j[0] for j in i[0]])
+        i_xmax = max([j[0] for j in i[0]])
+        i_ymin = min([j[1] for j in i[0]])
+        for j in data:
+            j_xmax = max([k[0] for k in j[0]])
+            j_xmin = min([k[0] for k in j[0]])
+            j_ymin = min([k[1] for k in j[0]])
+            if i!=j and not (j_xmax<i_xmin and j_xmin<i_xmin) and not (j_xmax>i_xmax and j_xmin>i_xmax) and j_ymin<=i_ymin:
+                possible_vertical.append(j) 
+        if possible_vertical:
+            closest_vertical = sorted(possible_vertical, key=lambda x: x[0][0][1])[-1]
+            if len(vertical_output):
+                vertical_output[i[1][0]] = closest_vertical[1][0] + " " + vertical_output[i[1][0]]
+            else:
+                vertical_output[i[1][0]] = closest_vertical[1][0]
+    
+    for i in key_data:
+        possible_horizontal = []
+        i_ymin = min([j[1] for j in i[0]])
+        i_ymax = max([j[1] for j in i[0]])
+        i_xmin = min([j[0] for j in i[0]])
+        for j in data:
+            j_ymax = max([k[1] for k in j[0]])
+            j_ymin = min([k[1] for k in j[0]])
+            j_xmin = min([k[0] for k in j[0]])
+            if i!=j and not (j_ymax<i_ymin and j_ymin<i_ymin) and not (j_ymax>i_ymax and j_ymin>i_ymax) and j_xmin<=i_xmin:
+                possible_horizontal.append(j) 
+        if possible_horizontal:
+            closest_horizontal = sorted(possible_horizontal, key=lambda x: x[0][0][0])[-1]
+            if len(horizontal_output):
+                horizontal_output[i[1][0]] = closest_horizontal[1][0] + " " + horizontal_output[i[1][0]]
+            else:
+                horizontal_output[i[1][0]] = closest_horizontal[1][0]
+    
+    output = {}
+    for k,v in horizontal_output.items():
+        if v=='':
+            v = 'uncategorizable Data'
+            if 'uncategorizable Data' in output:
+                output[v] = output[v] + ' ' + k
+            else:
+                output[v] = k
+        else:
+            if not any([j in v for j in '1234567890']):
+                output[v] = k
+    return output
+
+
+# In[31]:
+
+
 def formater(data):
     product_name_prompts = ['Description','Particular']
     product_code_prompts = ['Ref','Item','Code','Id','No']
@@ -323,65 +312,15 @@ def formater(data):
                 all_products[row]['product_unitprice'] = j[col]
             elif any([similar(i,k) for k in product_cost_prompts]) or any([k.casefold() in i.casefold() for k in product_cost_prompts]):
                 all_products[row]['product_cost'] = j[col]
-    # output = []
-    # for i in all_products.values():
-    #     output.append(i)
-    # return output
-    return(all_products)
+    output = []
+    for i in all_products.values():
+        output.append(i)
+    return output
+
+
+# In[32]:
+
 
 def similar(word_1,word_2):
     return SequenceMatcher(None, word_1.casefold(), word_2.casefold()).ratio()>0.6
 
-#generator for pix2struct
-def generate(model, processor, DEVICE, img, questions):
-  inputs = processor(images=[img for _ in range(len(questions))], 
-           text=questions, return_tensors="pt").to(DEVICE)
-  predictions = model.generate(**inputs, max_new_tokens=512)
-  return zip(questions, processor.batch_decode(predictions, skip_special_tokens=True))
-
-#docqa with pix2struct
-def DocQa(image,generator,type_of_document):
-
-    invoice_questions = ["what is the invoice number?",
-                "what is the date of issue?",
-                "What is the Grand total?",
-                "What is the subtotal or nett amount?",
-                "What is the GST amount?",
-                "What is the company?"]
-
-    statement_questions = ["what is the date of issue?",
-                "What is company?",
-                "What is the total balance?"]
-
-    if type_of_document == "invoice":
-        completions = generator(image,invoice_questions)
-        result = list(completions)
-        unstructured_data = {}
-        unstructured_data["invoice_no"] = result[0][1]
-        unstructured_data["date"] = result[1][1]
-        unstructured_data["Grand_total"] = result[2][1]
-        unstructured_data["subtotal"] = result[3][1]
-        unstructured_data["gst"] = result[4][1]
-        unstructured_data["co_name"] = result[5][1]
-        return(unstructured_data)
-        # js_unstruc_data = json.dumps(unstructured_data)
-        
-    else:
-        completions = generator(image,statement_questions)
-        result = list(completions)
-        unstructured_data = {}
-        unstructured_data["date"] = result[0][1]
-        unstructured_data["co_name"] = result[1][1]
-        unstructured_data["total"] = result[2][1]
-        return(unstructured_data)
-        # js_unstruc_data = json.dumps(unstructured_data)
-
-
-ocr_model = PaddleOCR(lang='en',use_angle_cls=True,show_log=False)
-
-img_path = "../data/Invoice/CamScanner 06-20-2023 11.20_74.jpg"
-# img_path = '../data/Invoice/R-4-52.jpg'
-image = Image.open(img_path).convert("RGB")
-#calling functions to do docqa and ocr then merging dicts and load into json
-data = run_ocr(image,type_of_document = "invoice")
-print(data)
