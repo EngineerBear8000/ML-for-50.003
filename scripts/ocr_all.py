@@ -4,7 +4,11 @@ from copy import deepcopy
 from difflib import SequenceMatcher
 from paddleocr import PaddleOCR
 import json
-ocr_model = PaddleOCR(lang='en',use_angle_cls=True,show_log=False)
+
+import torch
+from functools import partial
+from transformers import Pix2StructForConditionalGeneration as psg
+from transformers import Pix2StructProcessor as psp
 
 def run_ocr(image,type_of_document='invoice'):
     #Transpose the image accordingly to EXIF Orientation tag
@@ -65,7 +69,8 @@ def run_ocr(image,type_of_document='invoice'):
         else:
             header_data.append(None)
     extracted_data = {"header":header_data,"row_data":row_data}
-    return json.dumps(formater(extracted_data))
+    # return json.dumps(formater(extracted_data))
+    return formater(extracted_data)
 
 def run_ocr_template(image,template_data_loc,template_size):
     #Get position of table
@@ -311,10 +316,78 @@ def formater(data):
                 all_products[row]['product_unitprice'] = j[col]
             elif any([similar(i,k) for k in product_cost_prompts]) or any([k.casefold() in i.casefold() for k in product_cost_prompts]):
                 all_products[row]['product_cost'] = j[col]
-    output = []
-    for i in all_products.values():
-        output.append(i)
-    return output
+    # output = []
+    # for i in all_products.values():
+    #     output.append(i)
+    # return output
+    return(all_products)
 
 def similar(word_1,word_2):
     return SequenceMatcher(None, word_1.casefold(), word_2.casefold()).ratio()>0.6
+
+#generator for pix2struct
+def generate(model, processor, img, questions):
+  inputs = processor(images=[img for _ in range(len(questions))], 
+           text=questions, return_tensors="pt").to(DEVICE)
+  predictions = model.generate(**inputs, max_new_tokens=512)
+  return zip(questions, processor.batch_decode(predictions, skip_special_tokens=True))
+
+#docqa with pix2struct
+def DocQa(image,generator,type_of_document):
+
+    invoice_questions = ["what is the invoice number?",
+                "what is the date of issue?",
+                "What is the Grand total?",
+                "What is the subtotal or nett amount?",
+                "What is the GST amount?",
+                "What is the company?"]
+
+    statement_questions = ["what is the date of issue?",
+                "What is company?",
+                "What is the total balance?"]
+
+    if type_of_document == "invoice":
+        completions = generator(image,invoice_questions)
+        result = list(completions)
+        unstructured_data = {}
+        unstructured_data["invoice_no"] = result[0][1]
+        unstructured_data["date"] = result[1][1]
+        unstructured_data["Grand_total"] = result[2][1]
+        unstructured_data["subtotal"] = result[3][1]
+        unstructured_data["gst"] = result[4][1]
+        unstructured_data["co_name"] = result[5][1]
+        return(unstructured_data)
+        # js_unstruc_data = json.dumps(unstructured_data)
+        
+    else:
+        completions = generator(image,statement_questions)
+        result = list(completions)
+        unstructured_data = {}
+        unstructured_data["date"] = result[0][1]
+        unstructured_data["co_name"] = result[1][1]
+        unstructured_data["total"] = result[2][1]
+        return(unstructured_data)
+        # js_unstruc_data = json.dumps(unstructured_data)
+
+
+ocr_model = PaddleOCR(lang='en',use_angle_cls=True,show_log=False)
+
+img_path = "../data/Invoice/CamScanner 06-20-2023 11.20_74.jpg"
+# img_path = '../data/Invoice/R-4-52.jpg'
+image = Image.open(img_path).convert("RGB")
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+QAmodel = psg.from_pretrained("google/pix2struct-docvqa-base").to(DEVICE) 
+processor = psp.from_pretrained("google/pix2struct-docvqa-base")
+
+generator = partial(generate, QAmodel, processor)
+
+type_of_document = "invoice"
+
+#calling functions to do docqa and ocr then merging dicts and load into json
+unstructured_data = DocQa(image,generator,type_of_document)
+data  = run_ocr(image,type_of_document)
+merged_data = {**data, **unstructured_data}
+js_data = json.dumps(merged_data)
+print(js_data)
+
