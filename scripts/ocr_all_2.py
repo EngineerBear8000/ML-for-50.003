@@ -10,6 +10,8 @@ from functools import partial
 from transformers import Pix2StructForConditionalGeneration as psg
 from transformers import Pix2StructProcessor as psp
 
+ocr_model = PaddleOCR(lang='en',use_angle_cls=True,show_log=False)
+
 def run_ocr(image,type_of_document='invoice'):
     #Transpose the image accordingly to EXIF Orientation tag
     image = ImageOps.exif_transpose(image)
@@ -38,8 +40,7 @@ def run_ocr(image,type_of_document='invoice'):
                 break
             startpoint = i
     else:
-        print("ERROR: No initialier word can be found.")
-        return
+        raise Exception('No initialier word can be found.')
     
     #Find endpoint accordingly to identifier
     endpoint = query_word_single(raw[raw.index(startpoint)+5::],end_identifiers,instance_from_front=True)
@@ -375,13 +376,3 @@ def DocQa(image,generator,type_of_document):
         unstructured_data["total"] = result[2][1]
         return(unstructured_data)
         # js_unstruc_data = json.dumps(unstructured_data)
-
-
-ocr_model = PaddleOCR(lang='en',use_angle_cls=True,show_log=False)
-
-img_path = "../data/Invoice/CamScanner 06-20-2023 11.20_74.jpg"
-# img_path = '../data/Invoice/R-4-52.jpg'
-image = Image.open(img_path).convert("RGB")
-#calling functions to do docqa and ocr then merging dicts and load into json
-data = run_ocr(image,type_of_document = "invoice")
-print(data)
